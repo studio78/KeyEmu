@@ -1,8 +1,6 @@
 // KeyEmuController — Windows Forms приложение для управления платой MH-Tiny ATtiny88
 //
 // ЗАВИСИМОСТЬ: NuGet пакет HidLibrary
-// Tools → NuGet Package Manager → Package Manager Console:
-// Install-Package HidLibrary
 
 using System;
 using System.Drawing;
@@ -21,7 +19,7 @@ namespace KEApp
     {
         private const int VID = 0x1781;
         private const int PID = 0x24AB;
-        private const byte REPID_FEATURE = 0x05;  // ✅ Feature Report ID для команд
+        private const byte REPID_FEATURE = 0x05;
 
         private HidDevice _device;
         private bool _disposed;
@@ -37,13 +35,6 @@ namespace KEApp
 
                 _device = list.First();
                 _device.OpenDevice();
-
-                // Диагностика
-                Console.WriteLine($"Device opened: {_device.Description}");
-                Console.WriteLine($"InputReportByteLength:  {_device.Capabilities.InputReportByteLength}");
-                Console.WriteLine($"OutputReportByteLength: {_device.Capabilities.OutputReportByteLength}");
-                Console.WriteLine($"FeatureReportByteLength: {_device.Capabilities.FeatureReportByteLength}");
-
                 System.Threading.Thread.Sleep(100);
                 return _device.IsConnected;
             }
@@ -53,29 +44,52 @@ namespace KEApp
         public string LastInfo { get; private set; } = "";
 
         /// <summary>
-        /// Отправить команду через Feature Report.
-        /// Feature Report не требует USAGE для каждого байта — Windows принимает без ошибок.
+        /// Отправить команду на плату (Feature Report)
         /// </summary>
         public bool SendCommand(byte cmd)
         {
             if (!IsConnected) return false;
             try
             {
-                // ✅ ИСПРАВЛЕНО: Feature Report через WriteFeatureData
-                // buf[0] = Report ID (HidLibrary добавляет автоматически при WriteFeatureData)
-                // buf[1] = команда
                 byte[] buf = new byte[2];
-                buf[0] = REPID_FEATURE;  // Report ID = 0x05
-                buf[1] = cmd;            // Команда: 0x01/0x02/0x03
-
+                buf[0] = REPID_FEATURE;
+                buf[1] = cmd;
                 bool ok = _device.WriteFeatureData(buf);
-                LastInfo = $"FeatureWrite cmd=0x{cmd:X2} ok={ok} (buf={BitConverter.ToString(buf)})";
+                LastInfo = $"Write cmd=0x{cmd:X2} ok={ok}";
                 return ok;
             }
             catch (Exception ex)
             {
                 LastInfo = ex.Message;
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// ✅ ИСПРАВЛЕНО: Читаем Feature Report с правильным Report ID
+        /// </summary>
+        public byte ReadState()
+        {
+            if (!IsConnected) return 0;
+            try
+            {
+                // ✅ ВАЖНО: передаём REPID_FEATURE как reportId!
+                bool ok = _device.ReadFeatureData(out byte[] data, REPID_FEATURE);
+
+                if (ok && data != null && data.Length >= 2)
+                {
+                    // data[0] = Report ID (0x05), data[1] = состояние
+                    LastInfo = $"ReadState ok={ok} data={BitConverter.ToString(data)}";
+                    return data[1];
+                }
+
+                LastInfo = $"ReadState ok={ok} len={(data?.Length ?? 0)}";
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                LastInfo = $"ReadState error: {ex.Message}";
+                return 0;
             }
         }
 
@@ -93,7 +107,7 @@ namespace KEApp
     }
 
     // ==========================================================================
-    // Кастомная кнопка с анимацией
+    // Кастомная кнопка
     // ==========================================================================
     public class ToggleButton : Control
     {
@@ -101,16 +115,22 @@ namespace KEApp
         private float _animProgress = 0f;
         private bool _isHovered = false;
         private bool _isPressed = false;
-
         private readonly System.Windows.Forms.Timer _animTimer;
 
         public bool IsActive
         {
             get => _isActive;
-            set { if (_isActive != value) { _isActive = value; _animTimer.Start(); } }
+            set
+            {
+                if (_isActive != value)
+                {
+                    _isActive = value;
+                    _animTimer.Start();
+                }
+            }
         }
 
-        public event EventHandler<bool> StateChanged;
+        public event EventHandler StateChanged;
 
         public ToggleButton()
         {
@@ -143,7 +163,7 @@ namespace KEApp
             {
                 _isPressed = false;
                 IsActive = !IsActive;
-                StateChanged?.Invoke(this, _isActive);
+                StateChanged?.Invoke(this, EventArgs.Empty);
             }
             Invalidate();
         }
@@ -152,7 +172,6 @@ namespace KEApp
         {
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
-
             int cx = Width / 2, cy = Height / 2;
             int r = Math.Min(Width, Height) / 2 - 12;
 
@@ -173,13 +192,10 @@ namespace KEApp
 
             int po = _isPressed ? 2 : 0;
             var rc = new Rectangle(cx - r + po, cy - r + po, r * 2, r * 2);
-
-            using (var b = new SolidBrush(col))
-                g.FillEllipse(b, rc);
+            using (var b = new SolidBrush(col)) g.FillEllipse(b, rc);
 
             Color ring = Lerp(Color.FromArgb(75, 75, 92), Color.FromArgb(45, 215, 120), _animProgress);
-            using (var p = new Pen(ring, 2f))
-                g.DrawEllipse(p, rc);
+            using (var p = new Pen(ring, 2f)) g.DrawEllipse(p, rc);
 
             Color ic = Enabled
                 ? Lerp(Color.FromArgb(130, 130, 148), Color.White, _animProgress)
@@ -216,9 +232,11 @@ namespace KEApp
         private ToggleButton _btn;
         private Label _lblDevice, _lblState, _lblInfo;
         private System.Windows.Forms.Timer _watchTimer;
+        private System.Windows.Forms.Timer _pollTimer;
         private bool _connected = false;
+        private bool _suppressEvent = false;
 
-        public MainForm() { BuildUI(); StartWatcher(); }
+        public MainForm() { BuildUI(); StartWatcher(); StartPolling(); }
 
         private void BuildUI()
         {
@@ -270,6 +288,38 @@ namespace KEApp
             c.Region = new Region(p);
         }
 
+        private void StartPolling()
+        {
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            _pollTimer.Tick += (s, e) => PollDeviceState();
+            _pollTimer.Start();
+        }
+
+        private void PollDeviceState()
+        {
+            if (!_connected || !_dev.IsConnected) return;
+
+            byte state = _dev.ReadState();
+
+            // Диагностика
+            if (state != 0)
+            {
+                SetInfo(_dev.LastInfo);
+            }
+
+            if (state == 0) return;
+
+            bool shouldBeActive = (state == 0x01);
+
+            if (_btn.IsActive != shouldBeActive)
+            {
+                _suppressEvent = true;
+                _btn.IsActive = shouldBeActive;
+                SetState(shouldBeActive);
+                _suppressEvent = false;
+            }
+        }
+
         private void StartWatcher()
         {
             _watchTimer = new System.Windows.Forms.Timer { Interval = 1500 };
@@ -302,13 +352,15 @@ namespace KEApp
             }
         }
 
-        private async void OnToggle(object sender, bool active)
+        private async void OnToggle(object sender, EventArgs e)
         {
+            if (_suppressEvent) return;
+
+            bool active = _btn.IsActive;
             SetState(active);
             byte cmd = active ? (byte)0x01 : (byte)0x02;
 
             bool ok = await Task.Run(() => _dev.SendCommand(cmd));
-
             SetInfo(_dev.LastInfo);
             _lblInfo.ForeColor = ok
                 ? Color.FromArgb(45, 205, 105)
@@ -330,6 +382,7 @@ namespace KEApp
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _watchTimer?.Stop();
+            _pollTimer?.Stop();
             _dev?.Dispose();
             base.OnFormClosing(e);
         }
