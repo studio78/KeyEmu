@@ -1,8 +1,8 @@
 #include <EasyHID.h>
 
-// Внешняя переменная из HIDPrivate.c — команда от ПК
-// 0x01 = включить, 0x02 = выключить, 0x03 = переключить
+// Внешние переменные из HIDPrivate.c
 extern volatile uint8_t hid_command;
+extern volatile uint8_t state_changed;  // ✅ флаг для ПК
 
 uint32_t myTimer1;
 uint32_t blinkTimer;
@@ -36,6 +36,8 @@ void applyActive(bool newState) {
         emulationStep = 0;
         digitalWrite(LED_PIN, LOW);
     }
+    // ✅ НОВОЕ: уведомляем ПК об изменении состояния
+    state_changed = isActive ? 0x01 : 0x02;
 }
 
 // ----------------------------------------------------------------
@@ -59,7 +61,7 @@ void loop()
     // --- 1. Команда от ПК через HID Feature Report ---
     if (hid_command != 0) {
         uint8_t cmd = hid_command;
-        hid_command = 0; // сбросить до обработки (прерывание безопасно)
+        hid_command = 0;
 
         if (cmd == 0x01 && !isActive) applyActive(true);
         else if (cmd == 0x02 && isActive) applyActive(false);
@@ -127,7 +129,7 @@ void loop()
                 if (millis() - stepStartTime >= 100) {
                     isEmulating = false;
                     emulationStep = 0;
-                    digitalWrite(LED_PIN, HIGH); // постоянное свечение в активном режиме
+                    digitalWrite(LED_PIN, HIGH);
                 }
                 break;
         }
@@ -146,5 +148,5 @@ void loop()
         }
     }
 
-    HID.tick(); // вызывать не реже каждых 10 мс!
+    HID.tick();
 }

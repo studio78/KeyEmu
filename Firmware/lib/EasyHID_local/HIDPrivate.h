@@ -18,13 +18,15 @@ extern char usb_hasCommed;
 extern uint8_t led_state;
 extern uint8_t report_buffer[8];
 extern volatile uint8_t hid_command;
+extern volatile uint8_t state_changed;  // ✅ флаг изменения состояния
 
 void usbReportSend(uint8_t sz);
 
 #define REPID_KEYBOARD  2
 #define REPID_FEATURE   5
 
-#define REPSIZE_KEYBOARD 8
+#define REPSIZE_KEYBOARD  8
+#define REPSIZE_FEATURE   2  // ✅ ReportID + state
 
 #ifdef __cplusplus
 }
