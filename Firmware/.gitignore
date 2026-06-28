@@ -3,6 +3,5 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-# Отменяем игнорирование для конкретной локальной библиотеки
 !lib/EasyHID_local/
 !lib/EasyHID_local/**
