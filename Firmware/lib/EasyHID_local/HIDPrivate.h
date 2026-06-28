@@ -5,10 +5,10 @@
 extern "C" {
 #endif
 
-#include <avr/interrupt.h>
 #include <avr/pgmspace.h>
-#include <avr/power.h>
-#include <stdint.h>
+#include <avr/interrupt.h>
+#include <avr/io.h>
+#include <string.h>
 #include <util/delay.h>
 
 #include "usbconfig.h"
@@ -17,18 +17,13 @@ extern "C" {
 extern char usb_hasCommed;
 extern uint8_t led_state;
 extern uint8_t report_buffer[8];
-extern volatile uint8_t hid_command;  // команда от ПК (0x01=вкл, 0x02=выкл, 0x03=toggle)
+extern volatile uint8_t hid_command;
 
 void usbReportSend(uint8_t sz);
 
-#define REPID_MOUSE    1
-#define REPID_KEYBOARD 2
-#define REPID_MM_KEY   3
-#define REPID_SYS_KEY  4
+#define REPID_KEYBOARD  2
+#define REPID_FEATURE   5
 
-#define REPSIZE_MOUSE    4
-#define REPSIZE_MM_KEY   3
-#define REPSIZE_SYS_KEY  2
 #define REPSIZE_KEYBOARD 8
 
 #ifdef __cplusplus

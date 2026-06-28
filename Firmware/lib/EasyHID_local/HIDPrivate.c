@@ -2,173 +2,128 @@
 
 uint8_t report_buffer[8];
 char usb_hasCommed = 0;
-uint8_t idle_rate = 500 / 4;   // see HID1_11.pdf sect 7.2.4
-uint8_t protocol_version = 0;  // see HID1_11.pdf sect 7.2.6
-uint8_t led_state = 0;         // caps/num/scroll lock LEDs
-volatile uint8_t hid_command = 0; // команда от ПК (читается в loop() скетча)
+uint8_t idle_rate = 500 / 4;
+uint8_t protocol_version = 0;
+uint8_t led_state = 0;
+volatile uint8_t hid_command = 0;
 
 void usbReportSend(uint8_t sz) {
-  // perform usb background tasks until the report can be sent, then send it
-  while (1) {
-    usbPoll();  // this needs to be called at least once every 10 ms
-    if (usbInterruptIsReady()) {
-      usbSetInterrupt((uint8_t *)report_buffer, sz);  // send
-      break;
-      // see http://vusb.wikidot.com/driver-api
+    while (1) {
+        usbPoll();
+        if (usbInterruptIsReady()) {
+            usbSetInterrupt((uint8_t *)report_buffer, sz);
+            break;
+        }
     }
-  }
 }
 
-// USB HID report descriptor for boot protocol keyboard
-// see HID1_11.pdf appendix B section 1
-// USB_CFG_HID_REPORT_DESCRIPTOR_LENGTH is defined in usbconfig (should be 173)
+// HID Report Descriptor: ОДНА Application collection (Keyboard)
+// Feature Report вложен в Logical Collection внутри неё
+// Длина: 83 байта
 const PROGMEM char usbHidReportDescriptor[USB_CFG_HID_REPORT_DESCRIPTOR_LENGTH] = {
-    0x05, 0x01,         // USAGE_PAGE (Generic Desktop)
-    0x09, 0x02,         // USAGE (Mouse)
-    0xa1, 0x01,         // COLLECTION (Application)
-    0x09, 0x01,         //   USAGE (Pointer)
-    0xA1, 0x00,         //   COLLECTION (Physical)
-    0x85, REPID_MOUSE,  //     REPORT_ID
-    0x05, 0x09,         //     USAGE_PAGE (Button)
-    0x19, 0x01,         //     USAGE_MINIMUM
-    0x29, 0x03,         //     USAGE_MAXIMUM
-    0x15, 0x00,         //     LOGICAL_MINIMUM (0)
-    0x25, 0x01,         //     LOGICAL_MAXIMUM (1)
-    0x95, 0x03,         //     REPORT_COUNT (3)
-    0x75, 0x01,         //     REPORT_SIZE (1)
-    0x81, 0x02,         //     INPUT (Data,Var,Abs)
-    0x95, 0x01,         //     REPORT_COUNT (1)
-    0x75, 0x05,         //     REPORT_SIZE (5)
-    0x81, 0x03,         //     INPUT (Const,Var,Abs)
-    0x05, 0x01,         //     USAGE_PAGE (Generic Desktop)
-    0x09, 0x30,         //     USAGE (X)
-    0x09, 0x31,         //     USAGE (Y)
-    0x15, 0x81,         //     LOGICAL_MINIMUM (-127)
-    0x25, 0x7F,         //     LOGICAL_MAXIMUM (127)
-    0x75, 0x08,         //     REPORT_SIZE (8)
-    0x95, 0x02,         //     REPORT_COUNT (2)
-    0x81, 0x06,         //     INPUT (Data,Var,Rel)
-    0xC0,               //   END_COLLECTION
-    0xC0,               // END COLLECTION
+    // ===== Application Collection: Keyboard =====
+    0x05, 0x01,       // USAGE_PAGE (Generic Desktop)
+    0x09, 0x06,       // USAGE (Keyboard)
+    0xA1, 0x01,       // COLLECTION (Application)
 
-    0x05, 0x01,            // USAGE_PAGE (Generic Desktop)
-    0x09, 0x06,            // USAGE (Keyboard)
-    0xA1, 0x01,            // COLLECTION (Application)
-    0x85, REPID_KEYBOARD,  // REPORT_ID
-    0x75, 0x01,            //   REPORT_SIZE (1)
-    0x95, 0x08,            //   REPORT_COUNT (8)
-    0x05, 0x07,            //   USAGE_PAGE (Keyboard)(Key Codes)
-    0x19, 0xE0,            //   USAGE_MINIMUM (Keyboard LeftControl)(224)
-    0x29, 0xE7,            //   USAGE_MAXIMUM (Keyboard Right GUI)(231)
-    0x15, 0x00,            //   LOGICAL_MINIMUM (0)
-    0x25, 0x01,            //   LOGICAL_MAXIMUM (1)
-    0x81, 0x02,            //   INPUT (Data,Var,Abs) ; Modifier byte
-    0x95, 0x01,            //   REPORT_COUNT (1)
-    0x75, 0x08,            //   REPORT_SIZE (8)
-    0x81, 0x03,            //   INPUT (Cnst,Var,Abs) ; Reserved byte
-    0x95, 0x05,            //   REPORT_COUNT (5)
-    0x75, 0x01,            //   REPORT_SIZE (1)
-    0x05, 0x08,            //   USAGE_PAGE (LEDs)
-    0x19, 0x01,            //   USAGE_MINIMUM (Num Lock)
-    0x29, 0x05,            //   USAGE_MAXIMUM (Kana)
-    0x91, 0x02,            //   OUTPUT (Data,Var,Abs) ; LED report
-    0x95, 0x01,            //   REPORT_COUNT (1)
-    0x75, 0x03,            //   REPORT_SIZE (3)
-    0x91, 0x03,            //   OUTPUT (Cnst,Var,Abs) ; LED report padding
-    0x95, 0x05,            //   REPORT_COUNT (5)
-    0x75, 0x08,            //   REPORT_SIZE (8)
-    0x15, 0x00,            //   LOGICAL_MINIMUM (0)
-    0x26, 0xA4, 0x00,      //   LOGICAL_MAXIMUM (164)
-    0x05, 0x07,            //   USAGE_PAGE (Keyboard)(Key Codes)
-    0x19, 0x00,            //   USAGE_MINIMUM (Reserved (no event indicated))(0)
-    0x2A, 0xA4, 0x00,      //   USAGE_MAXIMUM (Keyboard Application)(164)
-    0x81, 0x00,            //   INPUT (Data,Ary,Abs)
-    0xC0,                  // END_COLLECTION
+    // --- Report ID 2: Keyboard Input + LED Output ---
+    0x85, REPID_KEYBOARD, // REPORT_ID (2)
 
-    0x05, 0x0C,          // USAGE_PAGE (Consumer Devices)
-    0x09, 0x01,          // USAGE (Consumer Control)
-    0xA1, 0x01,          // COLLECTION (Application)
-    0x85, REPID_MM_KEY,  //   REPORT_ID
-    0x19, 0x00,          //   USAGE_MINIMUM (Unassigned)
-    0x2A, 0x3C, 0x02,    //   USAGE_MAXIMUM
-    0x15, 0x00,          //   LOGICAL_MINIMUM (0)
-    0x26, 0x3C, 0x02,    //   LOGICAL_MAXIMUM
-    0x95, 0x01,          //   REPORT_COUNT (1)
-    0x75, 0x10,          //   REPORT_SIZE (16)
-    0x81, 0x00,          //   INPUT (Data,Ary,Abs)
-    0xC0,                // END_COLLECTION
+    // Modifier byte (Input)
+    0x75, 0x01,       // REPORT_SIZE (1)
+    0x95, 0x08,       // REPORT_COUNT (8)
+    0x05, 0x07,       // USAGE_PAGE (Keyboard)
+    0x19, 0xE0,       // USAGE_MINIMUM (224)
+    0x29, 0xE7,       // USAGE_MAXIMUM (231)
+    0x15, 0x00,       // LOGICAL_MINIMUM (0)
+    0x25, 0x01,       // LOGICAL_MAXIMUM (1)
+    0x81, 0x02,       // INPUT (Data,Var,Abs)
 
-    0x05, 0x01,           // USAGE_PAGE (Generic Desktop)
-    0x09, 0x80,           // USAGE (System Control)
-    0xA1, 0x01,           // COLLECTION (Application)
-    0x85, REPID_SYS_KEY,  //   REPORT_ID
-    0x95, 0x01,           //   REPORT_COUNT (1)
-    0x75, 0x02,           //   REPORT_SIZE (2)
-    0x15, 0x01,           //   LOGICAL_MINIMUM (1)
-    0x25, 0x03,           //   LOGICAL_MAXIMUM (3)
-    0x09, 0x82,           //   USAGE (System Sleep)
-    0x09, 0x81,           //   USAGE (System Power)
-    0x09, 0x83,           //   USAGE (System Wakeup)
-    0x81, 0x60,           //   INPUT
-    0x75, 0x06,           //   REPORT_SIZE (6)
-    0x81, 0x03,           //   INPUT (Cnst,Var,Abs)
-    0xC0,                 // END_COLLECTION
+    // Reserved byte (Input)
+    0x95, 0x01,       // REPORT_COUNT (1)
+    0x75, 0x08,       // REPORT_SIZE (8)
+    0x81, 0x03,       // INPUT (Cnst,Var,Abs)
+
+    // LED Output (5 bits + 3 bits padding)
+    0x95, 0x05,       // REPORT_COUNT (5)
+    0x75, 0x01,       // REPORT_SIZE (1)
+    0x05, 0x08,       // USAGE_PAGE (LEDs)
+    0x19, 0x01,       // USAGE_MINIMUM (Num Lock)
+    0x29, 0x05,       // USAGE_MAXIMUM (Kana)
+    0x91, 0x02,       // OUTPUT (Data,Var,Abs)
+    0x95, 0x01,       // REPORT_COUNT (1)
+    0x75, 0x03,       // REPORT_SIZE (3)
+    0x91, 0x03,       // OUTPUT (Cnst,Var,Abs)
+
+    // Keycodes (Input)
+    0x95, 0x05,       // REPORT_COUNT (5)
+    0x75, 0x08,       // REPORT_SIZE (8)
+    0x15, 0x00,       // LOGICAL_MINIMUM (0)
+    0x26, 0xA4, 0x00, // LOGICAL_MAXIMUM (164)
+    0x05, 0x07,       // USAGE_PAGE (Keyboard)
+    0x19, 0x00,       // USAGE_MINIMUM (0)
+    0x2A, 0xA4, 0x00, // USAGE_MAXIMUM (164)
+    0x81, 0x00,       // INPUT (Data,Ary,Abs)
+
+    // --- Report ID 5: Vendor Feature (Logical Collection) ---
+    0x85, REPID_FEATURE, // REPORT_ID (5)
+    0xA1, 0x02,       // COLLECTION (Logical) ← вложенная коллекция!
+    0x06, 0x00, 0xFF, // USAGE_PAGE (Vendor Defined)
+    0x09, 0x01,       // USAGE (Vendor Usage 1)
+    0x75, 0x08,       // REPORT_SIZE (8)
+    0x95, 0x01,       // REPORT_COUNT (1)
+    0xB1, 0x02,       // FEATURE (Data,Var,Abs)
+    0xC0,             // END_COLLECTION (Logical)
+
+    0xC0,             // END_COLLECTION (Application)
 };
 
 usbMsgLen_t usbFunctionSetup(uint8_t data[8]) {
-  usb_hasCommed = 1;
+    usb_hasCommed = 1;
+    usbRequest_t *rq = (void *)data;
 
-  usbRequest_t *rq = (void *)data;
+    if ((rq->bmRequestType & USBRQ_TYPE_MASK) != USBRQ_TYPE_CLASS)
+        return 0;
 
-  if ((rq->bmRequestType & USBRQ_TYPE_MASK) != USBRQ_TYPE_CLASS)
-    return 0;
-
-  switch (rq->bRequest) {
-    case USBRQ_HID_GET_IDLE:
-      usbMsgPtr = &idle_rate;
-      return 1;
-    case USBRQ_HID_SET_IDLE:
-      idle_rate = rq->wValue.bytes[1];
-      return 0;
-    case USBRQ_HID_GET_PROTOCOL:
-      usbMsgPtr = &protocol_version;
-      return 1;
-    case USBRQ_HID_SET_PROTOCOL:
-      protocol_version = rq->wValue.bytes[1];
-      return 0;
-    case USBRQ_HID_GET_REPORT:
-      usbMsgPtr = (uint8_t *)&report_buffer;
-      report_buffer[0] = rq->wValue.bytes[0];
-      report_buffer[1] = report_buffer[2] = report_buffer[3] =
-      report_buffer[4] = report_buffer[5] = report_buffer[6] =
-      report_buffer[7] = 0;
-      if (rq->wValue.bytes[0] == REPID_MOUSE)    return REPSIZE_MOUSE;
-      if (rq->wValue.bytes[0] == REPID_KEYBOARD) return REPSIZE_KEYBOARD;
-      if (rq->wValue.bytes[0] == REPID_MM_KEY)   return REPSIZE_MM_KEY;
-      if (rq->wValue.bytes[0] == REPID_SYS_KEY)  return REPSIZE_SYS_KEY;
-      return 8;
-    case USBRQ_HID_SET_REPORT:
-      // Принимаем Output Report любой длины >= 2
-      // Стандартный LED-репорт: [REPID_KEYBOARD, led_state]
-      // Наш расширенный:        [REPID_KEYBOARD, led_state, hid_command, ...]
-      if (rq->wLength.word >= 2)
-        return USB_NO_MSG;  // вызовет usbFunctionWrite
-      return 0;
-    default:
-      return 0;
-  }
+    switch (rq->bRequest) {
+        case USBRQ_HID_GET_IDLE:
+            usbMsgPtr = &idle_rate;
+            return 1;
+        case USBRQ_HID_SET_IDLE:
+            idle_rate = rq->wValue.bytes[1];
+            return 0;
+        case USBRQ_HID_GET_PROTOCOL:
+            usbMsgPtr = &protocol_version;
+            return 1;
+        case USBRQ_HID_SET_PROTOCOL:
+            protocol_version = rq->wValue.bytes[1];
+            return 0;
+        case USBRQ_HID_GET_REPORT:
+            usbMsgPtr = (uint8_t *)&report_buffer;
+            report_buffer[0] = rq->wValue.bytes[0];
+            report_buffer[1] = report_buffer[2] = report_buffer[3] =
+                report_buffer[4] = report_buffer[5] = report_buffer[6] =
+                report_buffer[7] = 0;
+            if (rq->wValue.bytes[0] == REPID_KEYBOARD) return REPSIZE_KEYBOARD;
+            if (rq->wValue.bytes[0] == REPID_FEATURE) return 1;
+            return 8;
+        case USBRQ_HID_SET_REPORT:
+            if (rq->wValue.bytes[0] == REPID_KEYBOARD && rq->wLength.word >= 2)
+                return USB_NO_MSG;
+            if (rq->wValue.bytes[0] == REPID_FEATURE && rq->wLength.word >= 1)
+                return USB_NO_MSG;
+            return 0;
+        default:
+            return 0;
+    }
 }
 
-// Вызывается V-USB автоматически из usbPoll() когда ПК отправляет Output Report.
-// data[0] = Report ID
-// data[1] = led_state  (Num/Caps/Scroll Lock — стандарт HID клавиатуры)
-// data[2] = hid_command (наша команда: 0x01=вкл, 0x02=выкл, 0x03=toggle)
 usbMsgLen_t usbFunctionWrite(uint8_t *data, uchar len) {
-  if (len >= 2 && data[0] == REPID_KEYBOARD)
-    led_state = data[1];
+    if (len >= 2 && data[0] == REPID_KEYBOARD)
+        led_state = data[1];
 
-  if (len >= 3 && data[0] == REPID_KEYBOARD && data[2] != 0)
-    hid_command = data[2];
+    if (len >= 2 && data[0] == REPID_FEATURE && data[1] != 0)
+        hid_command = data[1];
 
-  return len;
+    return 1;
 }
