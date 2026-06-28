@@ -1,8 +1,8 @@
-﻿// KeyEmuController — Windows Forms приложение для управления платой MH-Tiny ATtiny88
+// KeyEmuController — Windows Forms приложение для управления платой MH-Tiny ATtiny88
 //
 // ЗАВИСИМОСТЬ: NuGet пакет HidLibrary
-//   Tools → NuGet Package Manager → Package Manager Console:
-//   Install-Package HidLibrary
+// Tools → NuGet Package Manager → Package Manager Console:
+// Install-Package HidLibrary
 
 using System;
 using System.Drawing;
@@ -15,15 +15,13 @@ using HidLibrary;
 namespace KEApp
 {
     // ==========================================================================
-    //  HID устройство
+    // HID устройство
     // ==========================================================================
     public class KeyEmuDevice : IDisposable
     {
-        //private const int VID = 0x16C0;
-        //private const int PID = 0x05DF;
         private const int VID = 0x1781;
         private const int PID = 0x24AB;
-        private const byte REPID_KEYBOARD = 0x02;
+        private const byte REPID_FEATURE = 0x05;  // ✅ Feature Report ID для команд
 
         private HidDevice _device;
         private bool _disposed;
@@ -34,49 +32,44 @@ namespace KEApp
         {
             try
             {
-                // Перечислить все устройства с нужным VID/PID
                 var list = HidDevices.Enumerate(VID, PID).ToList();
                 if (list.Count == 0) return false;
 
                 _device = list.First();
                 _device.OpenDevice();
 
-                // Небольшая пауза после открытия — V-USB нужно время
-                System.Threading.Thread.Sleep(100);
+                // Диагностика
+                Console.WriteLine($"Device opened: {_device.Description}");
+                Console.WriteLine($"InputReportByteLength:  {_device.Capabilities.InputReportByteLength}");
+                Console.WriteLine($"OutputReportByteLength: {_device.Capabilities.OutputReportByteLength}");
+                Console.WriteLine($"FeatureReportByteLength: {_device.Capabilities.FeatureReportByteLength}");
 
+                System.Threading.Thread.Sleep(100);
                 return _device.IsConnected;
             }
             catch { return false; }
         }
 
-        /// <summary>
-        /// Отправить команду.
-        /// HidLibrary.Write() принимает массив БЕЗ ReportID — он добавляется автоматически.
-        /// Устройство получит: [REPID_KEYBOARD, led_state=0, cmd, 0, 0, 0, 0, 0]
-        /// wLength в usbFunctionSetup будет = 8 (REPSIZE_KEYBOARD).
-        ///
-        /// cmd: 0x01=вкл, 0x02=выкл, 0x03=toggle
-        /// </summary>
         public string LastInfo { get; private set; } = "";
 
+        /// <summary>
+        /// Отправить команду через Feature Report.
+        /// Feature Report не требует USAGE для каждого байта — Windows принимает без ошибок.
+        /// </summary>
         public bool SendCommand(byte cmd)
         {
             if (!IsConnected) return false;
             try
             {
-                // Write() ожидает: [0]=ReportID, [1..N]=данные
-                // Устройство получит в usbFunctionWrite:
-                //   data[0] = REPID_KEYBOARD (0x02)
-                //   data[1] = 0x00  (led_state)
-                //   data[2] = cmd   (0x01/0x02/0x03)
-                byte[] buf = new byte[9];  // 1 byte ReportID + 8 bytes data
-                buf[0] = 0x00;            // ReportID для HidLibrary
-                buf[1] = REPID_KEYBOARD;  // data[0]
-                buf[2] = 0x00;            // data[1] led_state
-                buf[3] = cmd;             // data[2] команда
+                // ✅ ИСПРАВЛЕНО: Feature Report через WriteFeatureData
+                // buf[0] = Report ID (HidLibrary добавляет автоматически при WriteFeatureData)
+                // buf[1] = команда
+                byte[] buf = new byte[2];
+                buf[0] = REPID_FEATURE;  // Report ID = 0x05
+                buf[1] = cmd;            // Команда: 0x01/0x02/0x03
 
-                bool ok = _device.Write(buf, 500);
-                LastInfo = $"Write cmd=0x{cmd:X2}  ok={ok}";
+                bool ok = _device.WriteFeatureData(buf);
+                LastInfo = $"FeatureWrite cmd=0x{cmd:X2} ok={ok} (buf={BitConverter.ToString(buf)})";
                 return ok;
             }
             catch (Exception ex)
@@ -100,7 +93,7 @@ namespace KEApp
     }
 
     // ==========================================================================
-    //  Кастомная кнопка с анимацией
+    // Кастомная кнопка с анимацией
     // ==========================================================================
     public class ToggleButton : Control
     {
@@ -122,8 +115,8 @@ namespace KEApp
         public ToggleButton()
         {
             SetStyle(ControlStyles.OptimizedDoubleBuffer |
-                     ControlStyles.AllPaintingInWmPaint |
-                     ControlStyles.UserPaint, true);
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.UserPaint, true);
             Size = new Size(180, 180);
             Cursor = Cursors.Hand;
 
@@ -149,7 +142,7 @@ namespace KEApp
             if (_isPressed && Enabled)
             {
                 _isPressed = false;
-                IsActive = !_isActive;
+                IsActive = !IsActive;
                 StateChanged?.Invoke(this, _isActive);
             }
             Invalidate();
@@ -215,7 +208,7 @@ namespace KEApp
     }
 
     // ==========================================================================
-    //  Главная форма
+    // Главная форма
     // ==========================================================================
     public class MainForm : Form
     {
@@ -224,7 +217,6 @@ namespace KEApp
         private Label _lblDevice, _lblState, _lblInfo;
         private System.Windows.Forms.Timer _watchTimer;
         private bool _connected = false;
-
 
         public MainForm() { BuildUI(); StartWatcher(); }
 
@@ -297,7 +289,7 @@ namespace KEApp
                 _lblDevice.Text = "● Устройство подключено";
                 _lblDevice.ForeColor = Color.FromArgb(45, 200, 95);
                 _btn.Enabled = true;
-                SetInfo("VID: 0x16C0  PID: 0x05DF\nГотово к работе");
+                SetInfo("VID: 0x1781 PID: 0x24AB\nГотово к работе");
             }
             else
             {
@@ -317,7 +309,6 @@ namespace KEApp
 
             bool ok = await Task.Run(() => _dev.SendCommand(cmd));
 
-            // Всегда показываем диагностику пока отлаживаем
             SetInfo(_dev.LastInfo);
             _lblInfo.ForeColor = ok
                 ? Color.FromArgb(45, 205, 105)
@@ -345,7 +336,7 @@ namespace KEApp
     }
 
     // ==========================================================================
-    //  Точка входа
+    // Точка входа
     // ==========================================================================
     static class Program
     {
