@@ -1,8 +1,10 @@
+#include <Arduino.h>
 #include <EasyHID.h>
 
-// Внешние переменные из HIDPrivate.c
+// Внешняя переменная из HIDPrivate.c — команда от ПК
+// 0x01 = включить, 0x02 = выключить, 0x03 = переключить
 extern volatile uint8_t hid_command;
-extern volatile uint8_t state_changed;  // ✅ флаг для ПК
+extern volatile uint8_t state_changed;  // флаг для ПК: 0x01=вкл, 0x02=выкл, 0x00=нет изменений
 
 uint32_t myTimer1;
 uint32_t blinkTimer;
@@ -22,8 +24,11 @@ bool lastStableButtonState = false;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
+// Отслеживаем предыдущее состояние для edge-triggered state_changed
+bool lastIsActive = false;
+
 // ----------------------------------------------------------------
-// Применить новое состояние isActive
+// Применить новое состояние isActive (edge-triggered state_changed)
 // ----------------------------------------------------------------
 void applyActive(bool newState) {
     isActive = newState;
@@ -36,8 +41,12 @@ void applyActive(bool newState) {
         emulationStep = 0;
         digitalWrite(LED_PIN, LOW);
     }
-    // ✅ НОВОЕ: уведомляем ПК об изменении состояния
-    state_changed = isActive ? 0x01 : 0x02;
+
+    // state_changed только при ИЗМЕНЕНИИ состояния (edge-triggered)
+    if (isActive != lastIsActive) {
+        state_changed = isActive ? 0x01 : 0x02;
+        lastIsActive = isActive;
+    }
 }
 
 // ----------------------------------------------------------------
@@ -53,6 +62,7 @@ void setup()
     buttonState = !digitalRead(BUTTON_PIN);
     lastButtonState = buttonState;
     lastStableButtonState = buttonState;
+    lastIsActive = false;
 }
 
 // ----------------------------------------------------------------
@@ -61,7 +71,7 @@ void loop()
     // --- 1. Команда от ПК через HID Feature Report ---
     if (hid_command != 0) {
         uint8_t cmd = hid_command;
-        hid_command = 0;
+        hid_command = 0; // сбросить до обработки (прерывание безопасно)
 
         if (cmd == 0x01 && !isActive) applyActive(true);
         else if (cmd == 0x02 && isActive) applyActive(false);
@@ -129,7 +139,7 @@ void loop()
                 if (millis() - stepStartTime >= 100) {
                     isEmulating = false;
                     emulationStep = 0;
-                    digitalWrite(LED_PIN, HIGH);
+                    digitalWrite(LED_PIN, HIGH); // постоянное свечение в активном режиме
                 }
                 break;
         }
@@ -148,5 +158,5 @@ void loop()
         }
     }
 
-    HID.tick();
+    HID.tick(); // вызывать не реже каждых 10 мс!
 }
