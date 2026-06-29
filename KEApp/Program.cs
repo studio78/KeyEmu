@@ -406,6 +406,10 @@ namespace KEApp
 
         private bool _connected = false;
         private bool _suppressEvent = false;
+
+        // Иконки трея
+        private Icon _iconInactive;
+        private Icon _iconActive;
         private int _idleTimeoutSeconds = 180;
         private int _softDelaySeconds = 3;
         private DateTime _softButtonPressedTime;
@@ -423,10 +427,37 @@ namespace KEApp
         {
             BuildUI();
             SetupTray();
+            LoadIcons();  // загрузка иконок
             SetupActivityMonitor();
             StartWatcher();
             StartPolling();
             StartIdleTimer();
+        }
+
+        // ======================== ICONS ========================
+        private void LoadIcons()
+        {
+            try
+            {
+                string appDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                string inactivePath = System.IO.Path.Combine(appDir, "icon_inactive.ico");
+                string activePath = System.IO.Path.Combine(appDir, "icon_active.ico");
+
+                if (System.IO.File.Exists(inactivePath))
+                    _iconInactive = new Icon(inactivePath);
+                else
+                    _iconInactive = SystemIcons.Application;
+
+                if (System.IO.File.Exists(activePath))
+                    _iconActive = new Icon(activePath);
+                else
+                    _iconActive = SystemIcons.Application;
+            }
+            catch
+            {
+                _iconInactive = SystemIcons.Application;
+                _iconActive = SystemIcons.Application;
+            }
         }
 
         // ======================== GRACE PERIOD ========================
@@ -464,7 +495,7 @@ namespace KEApp
 
             _trayIcon = new NotifyIcon
             {
-                Icon = SystemIcons.Application,
+                Icon = _iconInactive ?? SystemIcons.Application,
                 Text = "KEApp Controller",
                 ContextMenuStrip = _trayMenu,
                 Visible = true
@@ -500,7 +531,7 @@ namespace KEApp
             {
                 Hide();
                 ShowInTaskbar = false;
-                _trayIcon.ShowBalloonTip(2000, "KEApp", "Приложение свёрнуто в трей", ToolTipIcon.Info);
+                // Balloon tip отключен
             }
         }
 
@@ -849,6 +880,12 @@ namespace KEApp
         {
             _lblState.Text = active ? "АКТИВНО" : "ВЫКЛЮЧЕНО";
             _lblState.ForeColor = active ? Color.FromArgb(45, 205, 105) : Color.FromArgb(95, 95, 115);
+
+            // Меняем иконку в трее
+            if (_trayIcon != null)
+            {
+                _trayIcon.Icon = active ? (_iconActive ?? SystemIcons.Application) : (_iconInactive ?? SystemIcons.Application);
+            }
         }
 
         private void SetInfo(string text)
@@ -865,6 +902,8 @@ namespace KEApp
             _idleTimer?.Stop();
             _activityMonitor?.Dispose();
             _trayIcon?.Dispose();
+            _iconInactive?.Dispose();
+            _iconActive?.Dispose();
             _dev?.Dispose();
             base.OnFormClosing(e);
         }
