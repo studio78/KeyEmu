@@ -3,6 +3,7 @@
 // ЗАВИСИМОСТЬ: NuGet пакет HidLibrary
 
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -31,6 +32,17 @@ namespace KEApp
         public const int WM_MOUSEMOVE = 0x0200;
         public const int WM_MOUSEWHEEL = 0x020A;
 
+        // Virtual Key Codes
+        public const int VK_LSHIFT = 0xA0;
+        public const int VK_RSHIFT = 0xA1;
+        public const int VK_LCONTROL = 0xA2;
+        public const int VK_RCONTROL = 0xA3;
+        public const int VK_SHIFT = 0x10;
+        public const int VK_CONTROL = 0x11;
+        public const int VK_LMENU = 0xA4;
+        public const int VK_RMENU = 0xA5;
+        public const int VK_MENU = 0x12;
+
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelProc lpfn, IntPtr hMod, uint dwThreadId);
 
@@ -43,6 +55,28 @@ namespace KEApp
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         public static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        // GetLastInputInfo для таймера бездействия
+        [DllImport("user32.dll")]
+        public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        // Структура для LL keyboard hook
+        [StructLayout(LayoutKind.Sequential)]
+        public struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
     }
 
     // ==========================================================================
@@ -55,6 +89,7 @@ namespace KEApp
         private IntPtr _keyboardHook = IntPtr.Zero;
         private IntPtr _mouseHook = IntPtr.Zero;
 
+        public event Action<uint> KeyPressed; // vkCode
         public event Action ActivityDetected;
 
         public ActivityMonitor()
@@ -75,7 +110,21 @@ namespace KEApp
         {
             if (nCode >= 0 && (wParam == (IntPtr)NativeMethods.WM_KEYDOWN || wParam == (IntPtr)NativeMethods.WM_SYSKEYDOWN))
             {
-                ActivityDetected?.Invoke();
+                var kbd = Marshal.PtrToStructure<NativeMethods.KBDLLHOOKSTRUCT>(lParam);
+                uint vk = kbd.vkCode;
+
+                // === ФИЛЬТРАЦИЯ: игнорируем модификаторы, которые эмулирует плата ===
+                if (vk == NativeMethods.VK_LSHIFT || vk == NativeMethods.VK_RSHIFT || vk == NativeMethods.VK_SHIFT ||
+                    vk == NativeMethods.VK_LCONTROL || vk == NativeMethods.VK_RCONTROL || vk == NativeMethods.VK_CONTROL)
+                {
+                    // Не вызываем ActivityDetected для модификаторов
+                    // Но пропускаем дальше, чтобы система их обработала
+                }
+                else
+                {
+                    KeyPressed?.Invoke(vk);
+                    ActivityDetected?.Invoke();
+                }
             }
             return NativeMethods.CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
         }
@@ -137,9 +186,6 @@ namespace KEApp
 
         public string LastInfo { get; private set; } = "";
 
-        /// <summary>
-        /// Отправить команду на плату (Feature Report)
-        /// </summary>
         public bool SendCommand(byte cmd)
         {
             if (!IsConnected) return false;
@@ -160,9 +206,6 @@ namespace KEApp
             }
         }
 
-        /// <summary>
-        /// Читать состояние платы (Feature Report)
-        /// </summary>
         public byte ReadState()
         {
             if (!IsConnected) return 0;
@@ -229,8 +272,8 @@ namespace KEApp
         public ToggleButton()
         {
             SetStyle(ControlStyles.OptimizedDoubleBuffer |
-                ControlStyles.AllPaintingInWmPaint |
-                ControlStyles.UserPaint, true);
+                     ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint, true);
             Size = new Size(180, 180);
             Cursor = Cursors.Hand;
 
@@ -322,7 +365,7 @@ namespace KEApp
     }
 
     // ==========================================================================
-    // NumericUpDown кастомный (для таймера)
+    // NumericUpDown кастомный
     // ==========================================================================
     public class StyledNumericUpDown : NumericUpDown
     {
@@ -349,25 +392,32 @@ namespace KEApp
         private ActivityMonitor _activityMonitor;
         private NotifyIcon _trayIcon;
         private ContextMenuStrip _trayMenu;
-        private ToolStripMenuItem _trayItemToggle;  // пункт Включить/Выключить в трее
+        private ToolStripMenuItem _trayItemToggle;
 
         private ToggleButton _btn;
         private Label _lblDevice, _lblState, _lblInfo, _lblIdleTimer;
         private StyledNumericUpDown _numIdleMinutes;
-        private StyledNumericUpDown _numSoftDelay;   // ✅ задержка софт-кнопки
+        private StyledNumericUpDown _numSoftDelay;
         private CheckBox _chkEnableIdle;
-        private CheckBox _chkEnableSoftDelay;         // ✅ вкл/выкл задержку
+        private CheckBox _chkEnableSoftDelay;
         private System.Windows.Forms.Timer _watchTimer;
         private System.Windows.Forms.Timer _pollTimer;
         private System.Windows.Forms.Timer _idleTimer;
 
         private bool _connected = false;
         private bool _suppressEvent = false;
-        private DateTime _lastActivityTime;
-        private int _idleTimeoutSeconds = 300;          // 5 минут по умолчанию
-        private int _softDelaySeconds = 3;              // ✅ 3 сек задержка по умолчанию
-        private DateTime _softButtonPressedTime;      // ✅ время нажатия софт-кнопки
-        private bool _softDelayActive = false;        // ✅ флаг активной задержки
+        private int _idleTimeoutSeconds = 180;
+        private int _softDelaySeconds = 3;
+        private DateTime _softButtonPressedTime;
+        private bool _softDelayActive = false;
+
+        // === Grace Period: улучшенная защита ===
+        private volatile bool _gracePeriodActive = false;
+        private DateTime _gracePeriodEnd = DateTime.MinValue;
+        private const int GRACE_PERIOD_MS = 3000; // 3 секунды
+
+        // === GetLastInputInfo для таймера бездействия ===
+        private uint _lastInputTick = 0;
 
         public MainForm()
         {
@@ -379,12 +429,31 @@ namespace KEApp
             StartIdleTimer();
         }
 
+        // ======================== GRACE PERIOD ========================
+        private void SetGracePeriod()
+        {
+            _gracePeriodEnd = DateTime.Now.AddMilliseconds(GRACE_PERIOD_MS);
+            _gracePeriodActive = true;
+            Debug.WriteLine($"[Grace] SET until {_gracePeriodEnd:HH:mm:ss.fff}");
+        }
+
+        private bool IsGracePeriodActive()
+        {
+            if (!_gracePeriodActive) return false;
+            if (DateTime.Now >= _gracePeriodEnd)
+            {
+                _gracePeriodActive = false;
+                Debug.WriteLine("[Grace] EXPIRED");
+                return false;
+            }
+            return true;
+        }
+
         // ======================== TRAY ========================
         private void SetupTray()
         {
             _trayMenu = new ContextMenuStrip();
 
-            // ✅ НОВОЕ: пункт "Включить/Выключить"
             _trayItemToggle = new ToolStripMenuItem("Включить", null, (s, e) => TrayToggle());
             _trayMenu.Items.Add(_trayItemToggle);
             _trayMenu.Items.Add(new ToolStripSeparator());
@@ -396,17 +465,16 @@ namespace KEApp
             _trayIcon = new NotifyIcon
             {
                 Icon = SystemIcons.Application,
-                Text = "KeyEmu Controller",
+                Text = "KEApp Controller",
                 ContextMenuStrip = _trayMenu,
                 Visible = true
             };
             _trayIcon.DoubleClick += (s, e) => ShowFromTray();
         }
 
-        // ✅ НОВОЕ: обработчик пункта трей-меню
         private void TrayToggle()
         {
-            if (!_connected || !_dev.IsConnected) return;
+            if (!_connected || !_dev.IsConnected || IsGracePeriodActive()) return;
             _btn.IsActive = !_btn.IsActive;
             OnToggle(this, EventArgs.Empty);
         }
@@ -432,7 +500,7 @@ namespace KEApp
             {
                 Hide();
                 ShowInTaskbar = false;
-                _trayIcon.ShowBalloonTip(2000, "KeyEmu", "Приложение свёрнуто в трей", ToolTipIcon.Info);
+                _trayIcon.ShowBalloonTip(2000, "KEApp", "Приложение свёрнуто в трей", ToolTipIcon.Info);
             }
         }
 
@@ -440,17 +508,18 @@ namespace KEApp
         private void BuildUI()
         {
             Text = "KEApp";
-            ClientSize = new Size(380, 620);  // ✅ увеличили высоту для новых элементов
-            MinimumSize = new Size(400, 660);
+            ClientSize = new Size(380, 660);
+            MinimumSize = new Size(420, 720);
             BackColor = Color.FromArgb(20, 20, 28);
             ForeColor = Color.White;
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9f);
+            AutoScroll = true;
 
             // Заголовок
-            Add(MakeLabel("KEY EMU", new Font("Segoe UI", 20f, FontStyle.Bold), Color.FromArgb(225, 225, 240), 0, 18, 380, 44, ContentAlignment.MiddleCenter));
+            Add(MakeLabel("KEApp", new Font("Segoe UI", 20f, FontStyle.Bold), Color.FromArgb(225, 225, 240), 0, 18, 380, 44, ContentAlignment.MiddleCenter));
             Add(MakeLabel("ATtiny88 · MH-Tiny", new Font("Segoe UI", 9f), Color.FromArgb(90, 90, 110), 0, 60, 380, 22, ContentAlignment.MiddleCenter));
 
             // Статус устройства
@@ -514,7 +583,7 @@ namespace KEApp
                 Width = 280,
                 ForeColor = Color.FromArgb(180, 180, 200),
                 BackColor = Color.Transparent,
-                Checked = false
+                Checked = true
             };
             Add(_chkEnableIdle);
 
@@ -525,7 +594,8 @@ namespace KEApp
                 Left = 110,
                 Top = 522,
                 Width = 70,
-                Height = 26
+                Height = 26,
+                Value = 3
             };
             _numIdleMinutes.ValueChanged += (s, e) => _idleTimeoutSeconds = (int)_numIdleMinutes.Value * 60;
             Add(_numIdleMinutes);
@@ -557,48 +627,57 @@ namespace KEApp
             c.Region = new Region(p);
         }
 
-        // ======================== ACTIVITY MONITOR ========================
+        // ======================== ACTIVITY MONITOR (хуки) ========================
         private void SetupActivityMonitor()
         {
             _activityMonitor = new ActivityMonitor();
+            _activityMonitor.KeyPressed += OnKeyPressed; // отладка
             _activityMonitor.ActivityDetected += OnUserActivity;
-            _lastActivityTime = DateTime.Now;
         }
 
-        // ✅ ИСПРАВЛЕНО: задержка при включении софт-кнопки
+        private void OnKeyPressed(uint vkCode)
+        {
+            Debug.WriteLine($"[Hook] VK=0x{vkCode:X2} Grace={IsGracePeriodActive()}");
+        }
+
         private void OnUserActivity()
         {
-            _lastActivityTime = DateTime.Now;
+            // === Grace period: игнорируем ввод после команд платы ===
+            if (IsGracePeriodActive())
+            {
+                Debug.WriteLine("[Hook] IGNORED — grace period active");
+                return;
+            }
 
-            // Если активна задержка софт-кнопки — игнорируем активность
+            // Soft delay (дополнительная защита при включении через UI)
             if (_softDelayActive)
             {
                 var delayElapsed = (DateTime.Now - _softButtonPressedTime).TotalSeconds;
                 if (delayElapsed < _softDelaySeconds)
                 {
                     SetInfo($"Задержка: {delayElapsed:F0}/{_softDelaySeconds}с...");
-                    return;  // игнорируем активность во время задержки
+                    return;
                 }
                 _softDelayActive = false;
             }
 
             if (_btn.IsActive)
             {
+                Debug.WriteLine("[Hook] TurnOff from user activity");
                 TurnOff();
             }
         }
 
-        // ======================== IDLE TIMER ========================
+        // ======================== IDLE TIMER (GetLastInputInfo) ========================
         private void StartIdleTimer()
         {
-            _idleTimer = new System.Windows.Forms.Timer { Interval = 1000 }; // каждую секунду
+            _idleTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _idleTimer.Tick += (s, e) => CheckIdleTimeout();
             _idleTimer.Start();
         }
 
         private void CheckIdleTimeout()
         {
-            // Обновляем трей-меню
             _trayItemToggle.Text = _btn.IsActive ? "Выключить" : "Включить";
 
             if (!_chkEnableIdle.Checked || !_connected || !_dev.IsConnected)
@@ -608,18 +687,33 @@ namespace KEApp
                 return;
             }
 
+            // Не автовключаем, пока grace period
+            if (IsGracePeriodActive())
+            {
+                _lblIdleTimer.Text = "Ожидание стабилизации...";
+                _lblIdleTimer.ForeColor = Color.FromArgb(140, 140, 160);
+                return;
+            }
+
+            var lii = new NativeMethods.LASTINPUTINFO();
+            lii.cbSize = (uint)Marshal.SizeOf(typeof(NativeMethods.LASTINPUTINFO));
+            uint idleMs = 0;
+            if (NativeMethods.GetLastInputInfo(ref lii))
+            {
+                idleMs = (uint)Environment.TickCount - lii.dwTime;
+            }
+
             if (_btn.IsActive)
             {
-                var elapsed = DateTime.Now - _lastActivityTime;
-                _lblIdleTimer.Text = $"Активно. Бездействие: {elapsed.TotalSeconds:F0}с";
+                _lblIdleTimer.Text = $"Активно. Бездействие: {idleMs / 1000}с";
                 _lblIdleTimer.ForeColor = Color.FromArgb(45, 200, 95);
                 return;
             }
 
-            var idleTime = DateTime.Now - _lastActivityTime;
-            var remaining = TimeSpan.FromSeconds(_idleTimeoutSeconds) - idleTime;
+            uint threshold = (uint)_idleTimeoutSeconds * 1000;
+            long remaining = (long)threshold - idleMs;
 
-            if (remaining.TotalSeconds <= 0)
+            if (remaining <= 0)
             {
                 TurnOn();
                 _lblIdleTimer.Text = "Включено по таймеру бездействия";
@@ -627,7 +721,7 @@ namespace KEApp
             }
             else
             {
-                _lblIdleTimer.Text = $"Бездействие: {idleTime.TotalSeconds:F0}с / {_idleTimeoutSeconds}с (осталось {remaining.TotalSeconds:F0}с)";
+                _lblIdleTimer.Text = $"Бездействие: {idleMs / 1000}с / {_idleTimeoutSeconds}с (осталось {remaining / 1000}с)";
                 _lblIdleTimer.ForeColor = Color.FromArgb(140, 140, 160);
             }
         }
@@ -636,6 +730,7 @@ namespace KEApp
         private void TurnOn()
         {
             if (_btn.IsActive) return;
+            SetGracePeriod();
             _suppressEvent = true;
             _btn.IsActive = true;
             SetState(true);
@@ -646,6 +741,7 @@ namespace KEApp
         private void TurnOff()
         {
             if (!_btn.IsActive) return;
+            SetGracePeriod();
             _suppressEvent = true;
             _btn.IsActive = false;
             SetState(false);
@@ -672,6 +768,7 @@ namespace KEApp
 
             if (_btn.IsActive != shouldBeActive)
             {
+                SetGracePeriod();
                 _suppressEvent = true;
                 _btn.IsActive = shouldBeActive;
                 SetState(shouldBeActive);
@@ -699,6 +796,17 @@ namespace KEApp
                 _lblDevice.Text = "● Устройство подключено";
                 _lblDevice.ForeColor = Color.FromArgb(45, 200, 95);
                 _btn.Enabled = true;
+
+                byte state = _dev.ReadState();
+                if (state == 0x01)
+                {
+                    SetGracePeriod();
+                    _suppressEvent = true;
+                    _btn.IsActive = true;
+                    SetState(true);
+                    _suppressEvent = false;
+                }
+
                 SetInfo("Готово к работе");
             }
             else
@@ -715,13 +823,14 @@ namespace KEApp
         // ======================== EVENTS ========================
         private async void OnToggle(object sender, EventArgs e)
         {
-            if (_suppressEvent) return;
+            if (_suppressEvent || IsGracePeriodActive()) return;
 
             bool active = _btn.IsActive;
             SetState(active);
             byte cmd = active ? (byte)0x01 : (byte)0x02;
 
-            // ✅ НОВОЕ: если включение софт-кнопкой — активируем задержку
+            SetGracePeriod();
+
             if (active && _chkEnableSoftDelay.Checked)
             {
                 _softButtonPressedTime = DateTime.Now;
