@@ -161,27 +161,47 @@ namespace KEApp
         private const int VID = 0x1781;
         private const int PID = 0x24AB;
         private const byte REPID_FEATURE = 0x05;
+        private const int RETRY_COUNT = 2;
+        private const int RETRY_DELAY_MS = 50;
 
         private HidDevice _device;
         private bool _disposed;
 
-        public bool IsConnected => _device != null && _device.IsConnected;
+        public bool IsConnected
+        {
+            get
+            {
+                if (_device == null) return false;
+                try { return _device.IsConnected; }
+                catch { return false; }
+            }
+        }
 
         public bool Connect()
         {
             try
             {
+                if (_device != null && _device.IsConnected)
+                    return true;
+
                 var list = HidDevices.Enumerate(VID, PID).ToList();
-                if (list.Count == 0) return false;
+                if (list.Count == 0)
+                {
+                    LastInfo = "Device not found";
+                    return false;
+                }
 
                 _device = list.First();
                 _device.OpenDevice();
-
                 System.Threading.Thread.Sleep(100);
 
                 return _device.IsConnected;
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                LastInfo = $"Connect error: {ex.Message}";
+                return false;
+            }
         }
 
         public string LastInfo { get; private set; } = "";
@@ -189,54 +209,70 @@ namespace KEApp
         public bool SendCommand(byte cmd)
         {
             if (!IsConnected) return false;
-            try
-            {
-                byte[] buf = new byte[2];
-                buf[0] = REPID_FEATURE;
-                buf[1] = cmd;
 
-                bool ok = _device.WriteFeatureData(buf);
-                LastInfo = $"Write cmd=0x{cmd:X2} ok={ok}";
-                return ok;
-            }
-            catch (Exception ex)
+            for (int attempt = 0; attempt < RETRY_COUNT; attempt++)
             {
-                LastInfo = ex.Message;
-                return false;
+                try
+                {
+                    byte[] buf = new byte[2];
+                    buf[0] = REPID_FEATURE;
+                    buf[1] = cmd;
+
+                    bool ok = _device.WriteFeatureData(buf);
+                    LastInfo = $"Write cmd=0x{cmd:X2} ok={ok}";
+
+                    if (ok) return true;
+
+                    if (attempt < RETRY_COUNT - 1)
+                        System.Threading.Thread.Sleep(RETRY_DELAY_MS);
+                }
+                catch (Exception ex)
+                {
+                    LastInfo = $"Write error: {ex.Message}";
+                    if (attempt < RETRY_COUNT - 1)
+                        System.Threading.Thread.Sleep(RETRY_DELAY_MS);
+                }
             }
+            return false;
         }
 
         public byte ReadState()
         {
             if (!IsConnected) return 0;
+
             try
             {
                 bool ok = _device.ReadFeatureData(out byte[] data, REPID_FEATURE);
 
                 if (ok && data != null && data.Length >= 2)
                 {
-                    LastInfo = $"ReadState ok={ok} data={BitConverter.ToString(data)}";
+                    LastInfo = $"Read ok data={BitConverter.ToString(data)}";
                     return data[1];
                 }
 
-                LastInfo = $"ReadState ok={ok} len={(data?.Length ?? 0)}";
+                LastInfo = $"Read ok={ok} len={(data?.Length ?? 0)}";
                 return 0;
             }
             catch (Exception ex)
             {
-                LastInfo = $"ReadState error: {ex.Message}";
+                LastInfo = $"Read error: {ex.Message}";
                 return 0;
             }
         }
 
-        public void Disconnect() => _device?.CloseDevice();
+        public void Disconnect()
+        {
+            try { _device?.CloseDevice(); }
+            catch { }
+        }
 
         public void Dispose()
         {
             if (!_disposed)
             {
                 Disconnect();
-                _device?.Dispose();
+                try { _device?.Dispose(); }
+                catch { }
                 _disposed = true;
             }
         }
@@ -465,7 +501,8 @@ namespace KEApp
         {
             _gracePeriodEnd = DateTime.Now.AddMilliseconds(GRACE_PERIOD_MS);
             _gracePeriodActive = true;
-            Debug.WriteLine($"[Grace] SET until {_gracePeriodEnd:HH:mm:ss.fff}");
+            _btn.Enabled = false;  // блокируем кнопку на время стабилизации
+            Debug.WriteLine($"[Grace] SET until {_gracePeriodEnd:HH:mm:ss.fff}, button disabled");
         }
 
         private bool IsGracePeriodActive()
@@ -474,7 +511,10 @@ namespace KEApp
             if (DateTime.Now >= _gracePeriodEnd)
             {
                 _gracePeriodActive = false;
-                Debug.WriteLine("[Grace] EXPIRED");
+                // Разблокируем кнопку только если устройство подключено
+                if (_connected && _dev.IsConnected)
+                    _btn.Enabled = true;
+                Debug.WriteLine("[Grace] EXPIRED, button enabled");
                 return false;
             }
             return true;
@@ -783,7 +823,7 @@ namespace KEApp
         // ======================== POLLING ========================
         private void StartPolling()
         {
-            _pollTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _pollTimer.Tick += (s, e) => PollDeviceState();
             _pollTimer.Start();
         }
@@ -810,7 +850,7 @@ namespace KEApp
         // ======================== WATCHER ========================
         private void StartWatcher()
         {
-            _watchTimer = new System.Windows.Forms.Timer { Interval = 1500 };
+            _watchTimer = new System.Windows.Forms.Timer { Interval = 2000 };
             _watchTimer.Tick += (s, e) => CheckConnection();
             _watchTimer.Start();
             CheckConnection();
@@ -826,7 +866,9 @@ namespace KEApp
             {
                 _lblDevice.Text = "● Устройство подключено";
                 _lblDevice.ForeColor = Color.FromArgb(45, 200, 95);
-                _btn.Enabled = true;
+                // Разблокируем кнопку только если grace period не активен
+                if (!IsGracePeriodActive())
+                    _btn.Enabled = true;
 
                 byte state = _dev.ReadState();
                 if (state == 0x01)
