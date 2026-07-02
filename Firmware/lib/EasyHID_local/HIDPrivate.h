@@ -27,9 +27,12 @@ void usbReportSend(uint8_t sz);
 
 #define REPSIZE_KEYBOARD  8
 #define REPSIZE_FEATURE   2  // ✅ ReportID + state
+#define REPID_OUTPUT    1
+void usbFunctionWriteOut(uint8_t *data, uchar len);
 
 #ifdef __cplusplus
 }
 #endif
+
 
 #endif

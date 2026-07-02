@@ -114,4 +114,10 @@ usbMsgLen_t usbFunctionWrite(uint8_t *data, uchar len) {
         hid_command = data[1];
 
     return 1;
+    
+}
+
+void usbFunctionWriteOut(uint8_t *data, uchar len) {
+    if (len >= 2 && data[0] == REPID_OUTPUT && data[1] != 0)
+        hid_command = data[1];
 }
